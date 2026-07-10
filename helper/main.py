@@ -43,7 +43,7 @@ def extract_date_from_output(output, mag_id):
     regex = config.get("date_regex")
     if not regex:
         return None
-    
+
     # 查找匹配项
     # Note: re doesn't support \K, so we adapt
     if mag_id == "ny":
@@ -58,7 +58,7 @@ def extract_date_from_output(output, mag_id):
         match = re.search(r"TIM(\d{6})", output)
         if match:
             return f"20{match.group(1)}"
-            
+
     return None
 
 def extract_date_from_file(filename):
@@ -70,10 +70,10 @@ def extract_date_from_file(filename):
             month = datetime.strptime(month_str[:3], "%b").month
         except:
             return None
-        
+
         if not year:
             year = datetime.now().year
-            
+
         return f"{year}{int(month):02d}{int(day):02d}"
     return None
 
@@ -84,7 +84,7 @@ def run_command(args):
     env["QT_QPA_PLATFORM"] = "offscreen"
     # 核心：禁用 QtWebEngine 的沙箱，允许以 root 权限在 Docker 里抓取
     env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
-    
+
     # 改用 Popen 实现流式输出日志，防止长时间卡顿
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     full_output = []
@@ -114,7 +114,7 @@ def main():
             # 兼容 YYYY-MM-DD, YYYYMMDD, YYYY/MM/DD
             clean_date = issue_date.replace("-", "").replace("/", "")
             dt_obj = datetime.strptime(clean_date, "%Y%m%d")
-            
+
             # 对齐逻辑
             if mag_id == "te":
                 # 经济学人：对齐到周六 (5)
@@ -135,13 +135,13 @@ def main():
             else:
                 # 即使没偏移，也统一一下格式
                 issue_date = dt_obj.strftime(target_fmt)
-                
+
         except Exception as e:
             print(f"Warning: Failed to auto-adjust date: {e}")
 
     config = MAGZINES[mag_id]
     recipe = config["recipe"]
-    
+
     if not os.path.exists(BOOKS_DIR):
         os.makedirs(BOOKS_DIR)
 
@@ -155,7 +155,7 @@ def main():
     # 1. 运行转换
     print(f"--- Fetching {config['name']} ---")
     raw_epub = "temp_output.epub"
-    
+
     custom_recipe_path = f"helper/{recipe}.recipe"
     if os.path.exists(custom_recipe_path):
         recipe_to_use = custom_recipe_path
@@ -163,9 +163,9 @@ def main():
     else:
         recipe_to_use = f"{recipe}.recipe"
         print(f"ℹ️ Using built-in recipe: {recipe_to_use}")
-    
+
     convert_args = ["ebook-convert", recipe_to_use, raw_epub]
-    
+
     # 如果指定了日期，则尝试通过 --recipe-specific-option 传入
     if issue_date:
         opt_name = RECIPE_OPTIONS.get(mag_id, "date")
@@ -174,14 +174,14 @@ def main():
         print(f"Using recipe option: {opt_name}:{issue_date}")
 
     convert_output, code = run_command(convert_args)
-    
+
     if code != 0 or not os.path.exists(raw_epub):
         print("Conversion failed.")
         sys.exit(1)
 
     # 2. 确定日期
     date_str = extract_date_from_output(convert_output, mag_id)
-        
+
     if not date_str:
         # 尝试从文件名/元数据提取
         date_str = extract_date_from_file(raw_epub)
@@ -191,12 +191,12 @@ def main():
         # 去掉横杠，例如 2024-05-04 -> 20240504
         date_str = issue_date.replace("-", "")
         print(f"Extraction failed, using specified date as fallback: {date_str}")
-    
+
     if not date_str:
         # 最后兜底使用当前日期
         date_str = datetime.now().strftime("%Y%m%d")
         print(f"Warning: Could not extract date, using current: {date_str}")
-    
+
     print(f"Publication Date: {date_str}")
 
     # 3. 重命名与目录组织
