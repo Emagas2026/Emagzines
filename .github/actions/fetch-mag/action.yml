@@ -1,5 +1,6 @@
 name: 'Fetch and Process Magazine'
 description: 'Install Calibre, run Python script, and push results'
+
 inputs:
   mag_id:
     description: 'Magazine ID (ny, te, tm)'
@@ -26,23 +27,9 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          libegl1 \
-          libopengl0 \
-          libxcb-cursor0 \
-          libnss3 \
-          libxcomposite1 \
-          libxrandr2 \
-          libxtst6 \
-          libxkbcommon0 \
-          libgbm1 \
-          libfontconfig1 \
-          libgl1 \
-          libpulse0 \
-          libxrender1 \
-          libdbus-1-3 \
-          wget && \
-        (sudo apt-get install -y libasound2 || sudo apt-get install -y libasound2t64)
+        sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libnss3 libxcomposite1 \
+          libxrandr2 libxtst6 libxkbcommon0 libgbm1 libfontconfig1 libgl1 libpulse0 \
+          libxrender1 libdbus-1-3 wget libasound2t64
         
         url=https://download.calibre-ebook.com/linux-installer.sh
         sudo -v && wget -nv -O- $url | sudo sh /dev/stdin
@@ -58,78 +45,75 @@ runs:
       run: python helper/main.py ${{ inputs.mag_id }} "${{ inputs.issue_date }}"
 
     - name: Upload Artifact
-      if: env.ACT != 'true'
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.DATE }}-${{ inputs.mag_id }}
+        name: ${{ inputs.mag_id }}-${{ env.DATE || 'unknown' }}
         path: converted_ebooks
+        retention-days: 14
 
     - name: Push to 'magzines' branch
       shell: bash
       run: |
-        # 检查必要的环境变量
-        if [ -z "${{ env.DATE }}" ] || [ -z "${{ env.MAG_FOLDER }}" ]; then
-          echo "❌ Error: DATE or MAG_FOLDER environment variable not set"
-          echo "DATE: ${{ env.DATE }}"
-          echo "MAG_FOLDER: ${{ env.MAG_FOLDER }}"
-          exit 1
+        DATE="${{ env.DATE }}"
+        MAG_FOLDER="${{ env.MAG_FOLDER }}"
+        MAG_NAME="${{ inputs.mag_name }}"
+
+        # 容错：如果 Python 没设置环境变量，尝试从目录猜测
+        if [ -z "$DATE" ] && [ -d "../converted_ebooks" ]; then
+          DATE=$(ls -1 ../converted_ebooks/ 2>/dev/null | head -n 1)
+          echo "DATE guessed from directory: $DATE"
         fi
-        
-        echo "📁 DATE: ${{ env.DATE }}"
-        echo "📁 MAG_FOLDER: ${{ env.MAG_FOLDER }}"
-        echo "📁 MAG_NAME: ${{ inputs.mag_name }}"
-        
-        # 检查本地文件是否存在
-        if [ ! -d "converted_ebooks/${{ env.DATE }}" ]; then
-          echo "❌ Error: converted_ebooks/${{ env.DATE }} not found"
-          ls -la converted_ebooks/ || echo "converted_ebooks directory not found"
-          exit 1
-        fi
-        
-        # 针对 --reuse 模式做清理，如果目录已存在则先删除
-        rm -rf repo_magzines
-        
-        echo "🔄 Cloning magzines branch..."
-        # 使用 --sparse 和 --filter=blob:none 组合，实现极轻量克隆
-        git clone --filter=blob:none --branch magzines --single-branch --depth 1 --sparse https://x-access-token:${{ inputs.github_token }}@github.com/${{ github.repository }}.git repo_magzines
-        
-        if [ $? -ne 0 ]; then
-          echo "❌ Failed to clone repository"
-          exit 1
-        fi
-        
-        cd repo_magzines
-        
-        # 必须先进入子仓库后再设置 identity，否则 git commit 会报错不知身份
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        
-        # 只针对当前杂志目录下的年份目录进行稀疏检出
-        YEAR=$(echo ${{ env.DATE }} | cut -c 1-4)
-        echo "📅 Year: $YEAR"
-        
-        git sparse-checkout set ${{ env.MAG_FOLDER }}/$YEAR || echo "⚠️ Sparse checkout set warning (directory may not exist yet)"
-        
-        mkdir -p ${{ env.MAG_FOLDER }}/$YEAR
-        
-        # 检查目标目录是否已存在
-        if [ -d "${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }}" ]; then
-          echo "⚠️ Directory ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }} already exists, skipping push."
+
+        if [ -z "$DATE" ] || [ -z "$MAG_FOLDER" ]; then
+          echo "⚠️ DATE or MAG_FOLDER not set, skipping push step."
+          echo "DATE='$DATE' | MAG_FOLDER='$MAG_FOLDER'"
           exit 0
         fi
-        
-        # 将生成的书籍移入
-        echo "📦 Moving files to ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }}"
-        mv ../converted_ebooks/${{ env.DATE }} ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }}
-        
+
+        echo "📁 DATE: $DATE"
+        echo "📁 MAG_FOLDER: $MAG_FOLDER"
+        echo "📁 MAG_NAME: $MAG_NAME"
+
+        if [ ! -d "../converted_ebooks/$DATE" ]; then
+          echo "⚠️ No files found to push, skipping."
+          exit 0
+        fi
+
+        rm -rf repo_magzines
+
+        echo "🔄 Cloning magzines branch..."
+        git clone --filter=blob:none --branch magzines --single-branch --depth 1 --sparse \
+          https://x-access-token:${{ inputs.github_token }}@github.com/${{ github.repository }}.git repo_magzines
+
+        if [ $? -ne 0 ]; then
+          echo "❌ Failed to clone repository"
+          exit 0
+        fi
+
+        cd repo_magzines
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        YEAR=$(echo "$DATE" | cut -c 1-4)
+        git sparse-checkout set "${MAG_FOLDER}/$YEAR" || true
+        mkdir -p "${MAG_FOLDER}/$YEAR"
+
+        if [ -d "${MAG_FOLDER}/$YEAR/$DATE" ]; then
+          echo "⚠️ Directory already exists, skipping push."
+          exit 0
+        fi
+
+        echo "📦 Moving files..."
+        mv "../converted_ebooks/$DATE" "${MAG_FOLDER}/$YEAR/$DATE"
+
         git add .
-        
-        if [[ $(git diff --cached --quiet || echo "changes") == "changes" ]]; then
-          echo "📝 Committing changes..."
-          git commit -m "Update ${{ inputs.mag_name }} - ${{ env.DATE }} [skip ci]"
-          echo "📤 Pushing to magzines branch..."
+        if git diff --cached --quiet; then
+          echo "ℹ️ No changes to commit."
+        else
+          echo "📝 Committing..."
+          git commit -m "Update ${MAG_NAME} - ${DATE} [skip ci]"
+          echo "📤 Pushing..."
           git push origin magzines
           echo "✅ Push successful!"
-        else
-          echo "ℹ️ No changes to push."
         fi
