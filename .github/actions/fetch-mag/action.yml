@@ -67,37 +67,69 @@ runs:
     - name: Push to 'magzines' branch
       shell: bash
       run: |
+        # 检查必要的环境变量
+        if [ -z "${{ env.DATE }}" ] || [ -z "${{ env.MAG_FOLDER }}" ]; then
+          echo "❌ Error: DATE or MAG_FOLDER environment variable not set"
+          echo "DATE: ${{ env.DATE }}"
+          echo "MAG_FOLDER: ${{ env.MAG_FOLDER }}"
+          exit 1
+        fi
+        
+        echo "📁 DATE: ${{ env.DATE }}"
+        echo "📁 MAG_FOLDER: ${{ env.MAG_FOLDER }}"
+        echo "📁 MAG_NAME: ${{ inputs.mag_name }}"
+        
+        # 检查本地文件是否存在
+        if [ ! -d "converted_ebooks/${{ env.DATE }}" ]; then
+          echo "❌ Error: converted_ebooks/${{ env.DATE }} not found"
+          ls -la converted_ebooks/ || echo "converted_ebooks directory not found"
+          exit 1
+        fi
+        
         # 针对 --reuse 模式做清理，如果目录已存在则先删除
         rm -rf repo_magzines
         
+        echo "🔄 Cloning magzines branch..."
         # 使用 --sparse 和 --filter=blob:none 组合，实现极轻量克隆
         git clone --filter=blob:none --branch magzines --single-branch --depth 1 --sparse https://x-access-token:${{ inputs.github_token }}@github.com/${{ github.repository }}.git repo_magzines
+        
+        if [ $? -ne 0 ]; then
+          echo "❌ Failed to clone repository"
+          exit 1
+        fi
         
         cd repo_magzines
         
         # 必须先进入子仓库后再设置 identity，否则 git commit 会报错不知身份
-        git config user.name "plsy1"
-        git config user.email "plsy1@users.noreply.github.com"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
         
         # 只针对当前杂志目录下的年份目录进行稀疏检出
         YEAR=$(echo ${{ env.DATE }} | cut -c 1-4)
-        git sparse-checkout set ${{ env.MAG_FOLDER }}/$YEAR
+        echo "📅 Year: $YEAR"
+        
+        git sparse-checkout set ${{ env.MAG_FOLDER }}/$YEAR || echo "⚠️ Sparse checkout set warning (directory may not exist yet)"
         
         mkdir -p ${{ env.MAG_FOLDER }}/$YEAR
         
+        # 检查目标目录是否已存在
         if [ -d "${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }}" ]; then
-          echo "Directory ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }} already exists, skipping push."
+          echo "⚠️ Directory ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }} already exists, skipping push."
           exit 0
         fi
         
         # 将生成的书籍移入
+        echo "📦 Moving files to ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }}"
         mv ../converted_ebooks/${{ env.DATE }} ${{ env.MAG_FOLDER }}/$YEAR/${{ env.DATE }}
         
         git add .
         
         if [[ $(git diff --cached --quiet || echo "changes") == "changes" ]]; then
-          git commit -m "Update ${{ inputs.mag_name }} - ${{ env.DATE }}"
+          echo "📝 Committing changes..."
+          git commit -m "Update ${{ inputs.mag_name }} - ${{ env.DATE }} [skip ci]"
+          echo "📤 Pushing to magzines branch..."
           git push origin magzines
+          echo "✅ Push successful!"
         else
-          echo "No changes to push."
+          echo "ℹ️ No changes to push."
         fi
