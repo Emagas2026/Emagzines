@@ -156,7 +156,15 @@ def main():
     print(f"--- Fetching {config['name']} ---")
     raw_epub = "temp_output.epub"
     
-    convert_args = ["ebook-convert", f"{recipe}.recipe", raw_epub]
+        custom_recipe_path = f"helper/{recipe}.recipe"
+    if os.path.exists(custom_recipe_path):
+        recipe_to_use = custom_recipe_path
+        print(f"✅ Using custom recipe: {recipe_to_use}")
+    else:
+        recipe_to_use = f"{recipe}.recipe"
+        print(f"ℹ️ Using built-in recipe: {recipe_to_use}")
+    
+    convert_args = ["ebook-convert", recipe_to_use, raw_epub]
     
     # 如果指定了日期，则尝试通过 --recipe-specific-option 传入
     if issue_date:
