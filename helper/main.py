@@ -156,7 +156,7 @@ def main():
     print(f"--- Fetching {config['name']} ---")
     raw_epub = "temp_output.epub"
     
-        custom_recipe_path = f"helper/{recipe}.recipe"
+    custom_recipe_path = f"helper/{recipe}.recipe"
     if os.path.exists(custom_recipe_path):
         recipe_to_use = custom_recipe_path
         print(f"✅ Using custom recipe: {recipe_to_use}")
