@@ -11,21 +11,21 @@ MAGZINES = {
         "name": "The New Yorker Magazine",
         "recipe": "The New Yorker Magazine",
         "folder": "the_new_yorker",
-        "date_regex": r"magazine/\K\d{4}/\d{2}/\d{2}", # 从日志提取
+        "date_regex": r"magazine/\K\d{4}/\d{2}/\d{2}",  # 从日志提取
     },
     "te": {
         "id": "te",
         "name": "The Economist",
         "recipe": "The Economist",
         "folder": "the_economist",
-        "date_regex": r"images/\K(\d{8})", # 从日志提取
+        "date_regex": r"images/\K(\d{8})",  # 从日志提取
     },
     "tm": {
         "id": "tm",
         "name": "TIME Magazine",
         "recipe": "TIME Magazine",
         "folder": "time_magzine",
-        "date_regex": r"TIM\K(\d{6})", # 从日志提取
+        "date_regex": r"TIM\K(\d{6})",  # 从日志提取
     }
 }
 
@@ -38,6 +38,7 @@ RECIPE_OPTIONS = {
 
 BOOKS_DIR = "converted_ebooks"
 
+
 def extract_date_from_output(output, mag_id):
     config = MAGZINES[mag_id]
     regex = config.get("date_regex")
@@ -45,7 +46,6 @@ def extract_date_from_output(output, mag_id):
         return None
 
     # 查找匹配项
-    # Note: re doesn't support \K, so we adapt
     if mag_id == "ny":
         match = re.search(r"magazine/(\d{4})/(\d{2})/(\d{2})", output)
         if match:
@@ -58,8 +58,8 @@ def extract_date_from_output(output, mag_id):
         match = re.search(r"TIM(\d{6})", output)
         if match:
             return f"20{match.group(1)}"
-
     return None
+
 
 def extract_date_from_file(filename):
     # 通用的文件名日期提取: [Month DD, YYYY] 或 [Month DD]
@@ -70,12 +70,11 @@ def extract_date_from_file(filename):
             month = datetime.strptime(month_str[:3], "%b").month
         except:
             return None
-
         if not year:
             year = datetime.now().year
-
         return f"{year}{int(month):02d}{int(day):02d}"
     return None
+
 
 def run_command(args):
     print(f"Running: {' '.join(args)}")
@@ -90,10 +89,11 @@ def run_command(args):
     full_output = []
     if process.stdout:
         for line in process.stdout:
-            print(line, end="") # 实时流式输出
+            print(line, end="")  # 实时流式输出
             full_output.append(line)
     process.wait()
     return "".join(full_output), process.returncode
+
 
 def main():
     if len(sys.argv) < 2:
@@ -135,7 +135,6 @@ def main():
             else:
                 # 即使没偏移，也统一一下格式
                 issue_date = dt_obj.strftime(target_fmt)
-
         except Exception as e:
             print(f"Warning: Failed to auto-adjust date: {e}")
 
@@ -156,7 +155,9 @@ def main():
     print(f"--- Fetching {config['name']} ---")
     raw_epub = "temp_output.epub"
 
+    # === 修复点：这里是原错误位置 ===
     custom_recipe_path = f"helper/{recipe}.recipe"
+
     if os.path.exists(custom_recipe_path):
         recipe_to_use = custom_recipe_path
         print(f"✅ Using custom recipe: {recipe_to_use}")
@@ -181,7 +182,6 @@ def main():
 
     # 2. 确定日期
     date_str = extract_date_from_output(convert_output, mag_id)
-
     if not date_str:
         # 尝试从文件名/元数据提取
         date_str = extract_date_from_file(raw_epub)
@@ -226,6 +226,7 @@ def main():
             f.write(f"MAG_NAME={config['name']}\n")
 
     print(f"Success! Files saved in {target_dir}")
+
 
 if __name__ == "__main__":
     main()
