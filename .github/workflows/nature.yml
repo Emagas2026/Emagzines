@@ -7,8 +7,9 @@ on:
       issue_date:
         description: 'Issue Date (Optional, YYYY-MM-DD)'
         required: false
-  schedule:
-    - cron: '0 0 * * *'
+  # 定时任务已禁用 - 需要时取消注释下面两行
+  # schedule:
+  #   - cron: '0 0 * * *'
 
 jobs:
   worker:
