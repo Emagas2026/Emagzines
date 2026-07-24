@@ -16,7 +16,7 @@ MAGZINES = {
     "te": {
         "id": "te",
         "name": "The Economist",
-        "recipe": "The Economist",
+        "recipe": "The Economist.recipe",  # ← 关键修改：使用仓库中的文件
         "folder": "the_economist",
         "date_regex": r"images/\K(\d{8})",
     },
@@ -115,14 +115,10 @@ def main():
     print(f"--- Fetching {config['name']} ---")
     raw_epub = "temp_output.epub"
 
-    # 使用自定义 recipe 或内置
-    custom_recipe_path = f"helper/{recipe}.recipe"
-    if os.path.exists(custom_recipe_path):
-        recipe_to_use = custom_recipe_path
-        print(f"✅ Using custom recipe: {recipe_to_use}")
-    else:
-        recipe_to_use = f"{recipe}.recipe"
-        print(f"ℹ️ Using built-in recipe: {recipe_to_use}")
+    # ===== 关键修改：直接使用配置中的 recipe 路径 =====
+    # recipe 现在已经是 "The Economist.recipe"，ebook-convert 会优先查找当前目录
+    recipe_to_use = recipe
+    print(f"📄 Using recipe: {recipe_to_use}")
 
     convert_args = ["ebook-convert", recipe_to_use, raw_epub]
 
@@ -140,14 +136,14 @@ def main():
 
     # ==================== 提取日期 ====================
     date_str = None
-    # 从输出日志提取
+    # 从输出日志提取（可根据需要补充 extract_date_from_output）
     if mag_id in MAGZINES:
-        date_str = None  # 可根据需要补充 extract_date_from_output
+        date_str = None
 
     if not date_str:
-        date_str = safe_strptime(issue_date)
-        if date_str:
-            date_str = date_str.strftime("%Y%m%d")
+        dt_obj = safe_strptime(issue_date)
+        if dt_obj:
+            date_str = dt_obj.strftime("%Y%m%d")
 
     if not date_str:
         date_str = datetime.now().strftime("%Y%m%d")
