@@ -3,7 +3,7 @@ description: 'Install Calibre, run Python script, and push results'
 
 inputs:
   mag_id:
-    description: 'Magazine ID (ny, te, tm)'
+    description: 'Magazine ID (ny: New York Times, te: The Economist, tm: TIME, nature: Nature News)'
     required: true
   mag_name:
     description: 'Magazine Name'
