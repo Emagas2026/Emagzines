@@ -410,65 +410,81 @@ class Economist(BasicNewsRecipe):
 
     def get_article(self, url):
         """
-        重写 get_article 方法，直接抓取文章页面，模拟真实浏览器
+        增强版 get_article：多策略提取文章正文
         """
-        self.log('Fetching article directly: ' + url)
+        self.log(f'Fetching article directly: {url}')
         
-        # 创建一个新的浏览器实例，使用真实 User-Agent
+        # 1. 创建模拟浏览器的请求
         br = self.get_browser()
-        
-        # 添加更多真实浏览器头
         br.addheaders.append(('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'))
         br.addheaders.append(('Accept-Language', 'en-US,en;q=0.9'))
-        br.addheaders.append(('Sec-Fetch-Dest', 'document'))
-        br.addheaders.append(('Sec-Fetch-Mode', 'navigate'))
-        br.addheaders.append(('Sec-Fetch-Site', 'same-origin'))
-        br.addheaders.append(('Upgrade-Insecure-Requests', '1'))
         
         try:
-            # 直接打开文章 URL
+            # 2. 获取页面原始 HTML
             response = br.open(url)
             raw_html = response.read().decode('utf-8')
-            
-            # 尝试从 __NEXT_DATA__ 提取文章内容
             soup = self.index_to_soup(raw_html)
-            script_tag = soup.find('script', id='__NEXT_DATA__')
             
+            # ===== 策略1：从 __NEXT_DATA__ 提取结构化数据 =====
+            script_tag = soup.find('script', id='__NEXT_DATA__')
             if script_tag:
                 try:
                     data = json.loads(script_tag.string)
-                    # 尝试不同的数据路径
                     article_data = safe_dict(data, 'props', 'pageProps', 'content')
                     if not article_data:
                         article_data = safe_dict(data, 'props', 'pageProps', 'article')
+                    if not article_data:
+                        article_data = safe_dict(data, 'props', 'pageProps')
                     
                     if article_data:
-                        # 使用现有的 load_article_from_json 函数
                         fake_raw = json.dumps({'data': {'findArticleByUrl': article_data}})
                         html_content = load_article_from_json(fake_raw)
-                        if html_content:
+                        if html_content and len(html_content) > 500:
+                            self.log('✅ Successfully extracted article from __NEXT_DATA__')
                             return html_content
                 except Exception as e:
-                    self.log('Failed to parse __NEXT_DATA__: ' + str(e))
+                    self.log(f'__NEXT_DATA__ parsing failed: {e}')
             
-            # 如果 JSON 提取失败，尝试从 HTML 中直接提取正文
-            article_body = soup.find('article')
-            if article_body:
-                return str(article_body)
+            # ===== 策略2：从 HTML 容器中提取 =====
+            selectors = [
+                'article[class*="article__body"]',
+                'article[data-component="article-body"]',
+                'div[data-component="article-body"]',
+                'div[class*="article-body"]',
+                'main[class*="article"]',
+                'article',
+                'div[class*="content"]',
+            ]
             
-            # 尝试查找常见正文容器
-            for selector in ['div[data-component="article-body"]', 'div.article-body', 'main']:
-                content = soup.select_one(selector)
-                if content:
-                    return str(content)
+            for selector in selectors:
+                try:
+                    content = soup.select_one(selector)
+                    if content:
+                        for tag in content.find_all(['script', 'style', 'noscript', 'meta', 'link']):
+                            tag.decompose()
+                        html_content = str(content)
+                        if len(html_content) > 500:
+                            self.log(f'✅ Extracted article using selector: {selector}')
+                            return f'<html><body>{html_content}</body></html>'
+                except Exception:
+                    continue
             
-            # 如果都找不到，返回整个页面
-            self.log('Warning: Could not extract article body, returning raw HTML')
+            # ===== 策略3：提取所有段落 =====
+            self.log('⚠️ Using fallback strategy: extracting all paragraphs')
+            paragraphs = soup.find_all('p')
+            if paragraphs:
+                body_html = ''.join([str(p) for p in paragraphs if len(p.get_text(strip=True)) > 50])
+                if body_html:
+                    self.log('✅ Extracted article from paragraphs')
+                    return f'<html><body><article>{body_html}</article></body></html>'
+            
+            # ===== 最终备选：返回原始 HTML =====
+            self.log('⚠️ All strategies failed, returning raw HTML')
             return raw_html
             
         except Exception as e:
-            self.log('Error fetching article: ' + str(e))
-            return '<html><body><h1>Error fetching article</h1><p>' + str(e) + '</p></body></html>'
+            self.log(f'❌ Error fetching article: {e}')
+            return f'<html><body><h1>Error fetching article</h1><p>{e}</p></body></html>'
 
     def print_version(self, url):
         if self.from_web:
