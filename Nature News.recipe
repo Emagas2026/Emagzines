@@ -29,7 +29,7 @@ class NatureNews(BasicNewsRecipe):
     
     # 文章设置
     oldest_article = 7
-    max_articles_per_feed = 100
+    max_articles_per_feed = 20
     delay = 1
     ignore_duplicate_articles = {'url', 'title'}
     
