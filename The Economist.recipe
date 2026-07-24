@@ -167,26 +167,43 @@ class NoArticles(Exception):
     pass
 
 
-def get_content(url_):
-
+def get_content(url_, retries=3):
+    """获取内容，支持重试和完整的请求头"""
     headers = {
         'User-Agent': 'TheEconomist-Liskov-android',
         'accept': 'multipart/mixed; deferSpec=20220824, application/json',
         'accept-encoding': 'gzip',
+        'accept-language': 'en-US,en;q=0.9',
         'content-type': 'application/json',
         'x-app-trace-id': str(uuid4()),
         'x-economist-consumer': 'TheEconomist-Liskov-android',
         'x-teg-client-name': 'Economist-Android',
         'x-teg-client-os': 'Android',
         'x-teg-client-version': '4.40.0',
+        'origin': 'https://www.economist.com',
+        'referer': 'https://www.economist.com/',
+        'sec-fetch-site': 'cross-site',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
     }
+    
     br = browser()
-    req = Request(
-        url_,
-        headers=headers,
-    )
-    res = br.open(req)
-    return res.read()
+    
+    for attempt in range(retries):
+        try:
+            req = Request(url_, headers=headers)
+            res = br.open(req)
+            return res.read()
+        except Exception as e:
+            if attempt < retries - 1:
+                wait_time = 2 ** attempt  # 指数退避: 1s, 2s, 4s
+                print(f'Request failed (attempt {attempt + 1}/{retries}): {e}')
+                print(f'Retrying in {wait_time} seconds...')
+                time.sleep(wait_time)
+                # 每次重试使用不同的 trace id
+                headers['x-app-trace-id'] = str(uuid4())
+                continue
+            raise
 
 
 def process_url(url):
