@@ -4,62 +4,34 @@
 from calibre.web.feeds.news import BasicNewsRecipe
 from calibre.ebooks.BeautifulSoup import BeautifulSoup
 import re
-
+import urllib.request
+import xml.etree.ElementTree as ET
 
 class NatureNews(BasicNewsRecipe):
     """
     抓取 Nature 杂志的最新文章
-    来源: http://feeds.nature.com/nature/rss/current
+    使用 RDF/RSS 1.0 解析
     """
     
-    # 基本信息
     title = 'Nature News'
     language = 'en_GB'
     encoding = 'utf-8'
     __author__ = 'Calibre User'
     description = 'Latest news, research highlights and commentary from Nature'
     
-    # 封面图片（可选）
+    # 封面图片
+    cover_url = 'https://www.nature.com/uploads/product/nature/rss.png'
     masthead_url = 'https://www.nature.com/uploads/product/nature/rss.png'
     
-    # RSS 订阅源
-    feeds = [
-        ('Latest Articles', 'http://feeds.nature.com/nature/rss/current')
-    ]
+    # 不要使用默认的 feeds 解析
+    # 我们手动获取和解析
+    feeds = []
     
     # 文章设置
-    oldest_article = 7  # 保留 7 天内的文章
+    oldest_article = 7
     max_articles_per_feed = 100
-    
-    # 延迟设置（避免被限制）
     delay = 1
-    
-    # 去重
     ignore_duplicate_articles = {'url', 'title'}
-    
-    # 移除广告和无关元素
-    remove_attributes = ['style', 'height', 'width']
-    remove_empty_feeds = True
-    
-    # 保留的内容
-    keep_only_tags = [
-        dict(name=['h1', 'h2', 'h3', 'h4']),
-        dict(name='p'),
-        dict(name='blockquote'),
-        dict(name='ul', attrs={'class': re.compile(r'.*')}),
-        dict(name='ol', attrs={'class': re.compile(r'.*')}),
-        dict(name='figure'),
-        dict(name='figcaption'),
-        dict(name='img'),
-        dict(name='div', attrs={'class': re.compile(r'(article|content|body|summary|abstract|author|meta)')}),
-    ]
-    
-    # 移除标签
-    remove_tags = [
-        dict(name=['script', 'style', 'noscript', 'iframe']),
-        dict(attrs={'class': re.compile(r'(ad|advertisement|promo|social|share|related|sidebar|nav|footer|header)')}),
-        dict(attrs={'id': re.compile(r'(ad|advertisement|promo|social|share|related|sidebar|nav|footer|header)')}),
-    ]
     
     # 自定义 CSS
     extra_css = '''
@@ -79,10 +51,7 @@ class NatureNews(BasicNewsRecipe):
             margin-bottom: 0.5em;
             color: #000;
         }
-        h2 { font-size: 1.4em; font-weight: bold; margin-top: 1em; }
-        h3 { font-size: 1.2em; font-weight: bold; }
-        h4 { font-size: 1.1em; font-weight: bold; }
-        .article-title { font-size: 1.6em; font-weight: bold; color: #1a1a1a; }
+        .article-title { font-size: 1.5em; font-weight: bold; color: #1a1a1a; }
         .article-meta { color: #666; font-size: 0.9em; margin-bottom: 1em; }
         .author { color: #444; font-size: 0.95em; font-style: italic; }
         .date { color: #888; font-size: 0.9em; }
@@ -95,118 +64,149 @@ class NatureNews(BasicNewsRecipe):
             margin: 1em 0;
         }
         .doi { color: #999; font-size: 0.85em; font-family: monospace; }
-        blockquote { 
-            margin: 1em 2em; 
-            padding: 0.5em 1em; 
-            border-left: 3px solid #ccc; 
-            color: #444; 
-            background: #f9f9f9;
-        }
-        img { 
-            max-width: 100%; 
-            height: auto; 
-            display: block; 
-            margin: 1em auto;
-        }
+        img { max-width: 100%; height: auto; display: block; margin: 1em auto; }
         p { margin: 0.8em 0; }
-        .journal-name { 
-            color: #8B0000; 
-            font-weight: bold; 
-            font-size: 0.9em;
-        }
-        ul, ol { margin: 0.5em 0 0.5em 2em; }
-        li { margin: 0.3em 0; }
         .article-item {
             border-bottom: 1px solid #e0e0e0;
             padding: 1em 0;
-            margin-bottom: 0.5em;
         }
-        .article-item:last-child {
-            border-bottom: none;
-        }
+        .article-item:last-child { border-bottom: none; }
         a { color: #0055A4; text-decoration: none; }
         a:hover { text-decoration: underline; }
-        .featured-article {
-            background: #fafafa;
-            padding: 15px;
-            border-radius: 5px;
-            border: 1px solid #e0e0e0;
-        }
     '''
     
     def get_browser(self, *args, **kwargs):
-        """设置浏览器 User-Agent"""
         from calibre.utils.random_ua import random_common_chrome_user_agent
         kwargs['user_agent'] = kwargs.get('user_agent', random_common_chrome_user_agent())
         return BasicNewsRecipe.get_browser(self, *args, **kwargs)
     
+    def parse_index(self):
+        """
+        手动解析 RDF/RSS 1.0 格式
+        """
+        rss_url = 'http://feeds.nature.com/nature/rss/current'
+        self.log(f'Fetching RSS: {rss_url}')
+        
+        # 获取 RSS 内容
+        try:
+            response = urllib.request.urlopen(rss_url)
+            rss_content = response.read().decode('utf-8')
+        except Exception as e:
+            self.log(f'Error fetching RSS: {e}')
+            return []
+        
+        # 解析 XML
+        try:
+            root = ET.fromstring(rss_content)
+        except Exception as e:
+            self.log(f'Error parsing XML: {e}')
+            return []
+        
+        # 定义命名空间
+        ns = {
+            'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+            'dc': 'http://purl.org/dc/elements/1.1/',
+            'content': 'http://purl.org/rss/1.0/modules/content/',
+            'prism': 'http://prismstandard.org/namespaces/basic/2.0/',
+            'rss': 'http://purl.org/rss/1.0/'
+        }
+        
+        # 查找所有 item
+        items = root.findall('.//rss:item', ns)
+        self.log(f'Found {len(items)} items')
+        
+        articles = []
+        seen_urls = set()
+        
+        for item in items:
+            try:
+                # 提取标题
+                title_elem = item.find('dc:title', ns)
+                title = title_elem.text if title_elem is not None else ''
+                
+                # 提取链接
+                link_elem = item.find('rss:link', ns)
+                url = link_elem.text if link_elem is not None else ''
+                
+                # 提取作者
+                creator_elem = item.find('dc:creator', ns)
+                author = creator_elem.text if creator_elem is not None else ''
+                
+                # 提取日期
+                date_elem = item.find('dc:date', ns)
+                date = date_elem.text if date_elem is not None else ''
+                
+                # 提取摘要
+                content_elem = item.find('content:encoded', ns)
+                summary = ''
+                if content_elem is not None:
+                    # 从 CDATA 中提取纯文本
+                    content_text = content_elem.text or ''
+                    # 去除 HTML 标签
+                    summary = re.sub(r'<[^>]+>', '', content_text)
+                    # 提取描述部分
+                    if 'doi:' in summary:
+                        parts = summary.split('doi:')
+                        if len(parts) > 1:
+                            summary = summary.split('doi:')[0].strip()
+                
+                # 提取 DOI
+                doi_elem = item.find('prism:doi', ns)
+                doi = doi_elem.text if doi_elem is not None else ''
+                
+                if not title or not url:
+                    continue
+                
+                # 去重
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                
+                # 构建文章条目
+                articles.append({
+                    'title': title,
+                    'url': url,
+                    'description': summary,
+                    'author': author,
+                    'date': date,
+                    'doi': doi
+                })
+                
+            except Exception as e:
+                self.log(f'Error parsing item: {e}')
+                continue
+        
+        self.log(f'Successfully parsed {len(articles)} articles')
+        
+        # 按日期排序（最新的在前）
+        articles.sort(key=lambda x: x.get('date', ''), reverse=True)
+        
+        # 返回 feeds 格式
+        return [('Latest Articles', articles)]
+    
     def preprocess_html(self, soup):
-        """预处理 HTML 内容"""
+        """预处理文章 HTML"""
         
-        # 移除空标签
-        for tag in soup.find_all():
-            if tag.name in ['p', 'div', 'span'] and not tag.get_text(strip=True):
-                tag.decompose()
+        # 处理图片
+        for img in soup.find_all('img', src=True):
+            if 'nature.com' in img['src'] and 'cdn-cgi' not in img['src']:
+                img['src'] = img['src'].replace(
+                    'nature.com/',
+                    'nature.com/cdn-cgi/image/width=600,quality=80,format=auto/'
+                )
         
-        # 处理作者信息
-        for author in soup.find_all('meta', attrs={'name': 'citation_author'}):
-            if author.get('content'):
-                name = author['content']
-                author_tag = soup.new_tag('p')
-                author_tag['class'] = 'author'
-                author_tag.string = f'By {name}'
-                # 插入到文章开头
-                first_child = soup.find('h1')
-                if first_child:
-                    first_child.insert_after(author_tag)
+        # 美化标题
+        for h1 in soup.find_all('h1'):
+            if h1.get_text().strip():
+                h1['class'] = 'article-title'
         
-        # 处理发布日期
-        for date in soup.find_all('meta', attrs={'name': 'citation_publication_date'}):
-            if date.get('content'):
-                date_str = date['content']
-                date_tag = soup.new_tag('p')
-                date_tag['class'] = 'date'
-                date_tag.string = f'Published: {date_str}'
-                # 插入到作者后面
-                author_tag = soup.find('p', class_='author')
-                if author_tag:
-                    author_tag.insert_after(date_tag)
-        
-        # 处理摘要
-        for abstract in soup.find_all('meta', attrs={'name': 'description'}):
-            if abstract.get('content'):
-                summary = abstract['content']
-                summary_tag = soup.new_tag('blockquote')
-                summary_tag['class'] = 'summary'
-                summary_tag.string = summary
-                # 插入到标题后面
-                h1 = soup.find('h1')
-                if h1:
-                    h1.insert_after(summary_tag)
-        
-        # 处理 DOI
-        for doi in soup.find_all('meta', attrs={'name': 'citation_doi'}):
-            if doi.get('content'):
-                doi_str = doi['content']
-                doi_tag = soup.new_tag('p')
-                doi_tag['class'] = 'doi'
-                doi_tag.string = f'DOI: {doi_str}'
-                # 插入到文章末尾
-                soup.append(doi_tag)
+        # 移除脚本和样式
+        for tag in soup.find_all(['script', 'style', 'noscript']):
+            tag.decompose()
         
         return soup
     
-    def get_article_url(self, article):
-        """获取文章的完整 URL（如果需要）"""
-        url = article.get('url', '')
-        # 如果是相对路径，转换为绝对路径
-        if url.startswith('/'):
-            url = 'https://www.nature.com' + url
-        return url
-    
     def publication_date(self):
-        """设置发布日期"""
-        # 使用当前日期
         from datetime import datetime
         from calibre.utils.date import local_tz
         return datetime.now().replace(tzinfo=local_tz)
