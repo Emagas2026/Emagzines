@@ -1,0 +1,26 @@
+name: Nature News
+run-name: 'Nature News: ${{ github.ref_name }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_date:
+        description: 'Issue Date (Optional, YYYY-MM-DD)'
+        required: false
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Fetch and Process
+        uses: ./.github/actions/fetch-mag
+        with:
+          mag_id: nature
+          mag_name: "Nature News"
+          issue_date: ${{ github.event.inputs.issue_date }}
+          github_token: ${{ secrets.GITHUB_TOKEN || github.token }}
