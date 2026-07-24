@@ -1,501 +1,180 @@
-#!/usr/bin/env  python
+#!/usr/bin/env python
 import json
 import re
-import time
 from datetime import datetime, timedelta
-from urllib.parse import urljoin
-
-from calibre import browser
 from calibre.ptempfile import PersistentTemporaryFile
 from calibre.utils.date import local_tz
 from calibre.web.feeds.news import BasicNewsRecipe
-
-
-class NoArticles(Exception):
-    pass
+from html5_parser import parse
+from lxml import etree
 
 
 def process_url(url):
     if url.startswith('/'):
-        url = 'https://www.economist.com' + url
+        return 'https://www.economist.com' + url
     return url
 
 
-def extract_articles_from_page(soup, section_name=None):
-    """从页面提取文章链接和标题"""
-    articles = []
+def extract_cover_url(content):
+    """提取封面图片URL"""
+    cover = content.get('cover', {})
+    url = cover.get('url', '')
+    if url:
+        return url.replace(
+            'economist.com/',
+            'economist.com/cdn-cgi/image/width=960,quality=80,format=auto/'
+        )
+    return ''
+
+
+def extract_articles_from_components(components):
+    """从components中提取所有文章，按栏目分组"""
+    feeds = []
     seen = set()
     
-    # 方法1: 查找所有文章链接
-    # 查找 article 标签或带有文章链接的 div
-    for article_tag in soup.find_all(['article', 'div'], class_=re.compile(r'article|teaser|post|story|item')):
-        # 查找标题链接
-        link = None
-        title = None
-        
-        # 尝试查找 h1, h2, h3, h4 中的链接
-        for header in article_tag.find_all(['h1', 'h2', 'h3', 'h4']):
-            a = header.find('a', href=True)
-            if a and a.get('href'):
-                link = a
-                title = a.get_text(strip=True)
-                break
-        
-        if not link:
-            # 尝试直接查找 a 标签
-            for a in article_tag.find_all('a', href=True):
-                href = a.get('href', '')
-                if '/content/' in href or '/story/' in href or '/article/' in href:
-                    link = a
-                    title = a.get_text(strip=True)
-                    break
-        
-        if link and title:
-            url = process_url(link.get('href'))
-            if url not in seen and len(title) > 10:  # 过滤短标题
-                seen.add(url)
-                articles.append({
-                    'title': title,
-                    'url': url,
-                    'description': ''
-                })
-    
-    # 方法2: 直接查找所有文章链接（备用）
-    if not articles:
-        for a in soup.find_all('a', href=True):
-            href = a.get('href', '')
-            # 匹配经济学人的文章URL模式
-            if re.match(r'^/\d{4}/\d{2}/\d{2}/[a-z0-9-]+$', href):
-                title = a.get_text(strip=True)
-                if title and len(title) > 10:
-                    url = process_url(href)
-                    if url not in seen:
-                        seen.add(url)
-                        articles.append({
-                            'title': title,
-                            'url': url,
-                            'description': ''
-                        })
-    
-    return articles
-
-
-def extract_cover_from_page(soup):
-    """从页面提取封面图片"""
-    # 查找封面图片
-    cover_selectors = [
-        'meta[property="og:image"]',
-        'meta[name="twitter:image"]',
-        'img.cover-image',
-        'img.cover',
-        '.cover img',
-        '.issue-cover img'
-    ]
-    
-    for selector in cover_selectors:
-        try:
-            if selector.startswith('meta'):
-                tag = soup.find('meta', attrs={'property': selector.split('[')[1].rstrip(']')} if 'property' in selector else {'name': selector.split('[')[1].rstrip(']')})
-                if tag and tag.get('content'):
-                    return tag.get('content')
-            else:
-                img = soup.select_one(selector)
-                if img and img.get('src'):
-                    return img.get('src')
-        except:
+    for component in components:
+        # 跳过广告
+        if component.get('type') == 'AD':
             continue
-    
-    return None
-
-
-def extract_publication_date(soup):
-    """从页面提取出版日期"""
-    # 尝试从 meta 标签获取
-    date_selectors = [
-        'meta[property="article:published_time"]',
-        'meta[name="pubdate"]',
-        'meta[name="date"]',
-        'time[datetime]',
-        '.date',
-        '.published-date'
-    ]
-    
-    for selector in date_selectors:
-        try:
-            if selector.startswith('meta'):
-                if 'property=' in selector:
-                    tag = soup.find('meta', property=selector.split('property=')[1].strip('"'))
-                else:
-                    tag = soup.find('meta', name=selector.split('name=')[1].strip('"'))
-                if tag and tag.get('content'):
-                    return tag.get('content')
-            elif selector.startswith('time'):
-                tag = soup.find('time')
-                if tag and tag.get('datetime'):
-                    return tag.get('datetime')
-            else:
-                tag = soup.select_one(selector)
-                if tag:
-                    text = tag.get_text(strip=True)
-                    if text:
-                        return text
-        except:
+        
+        # 只处理栏目集合
+        if component.get('type') != 'COLLECTION':
             continue
+        
+        section_name = component.get('name', '未命名栏目')
+        articles = []
+        
+        for article in component.get('articles', []):
+            article_id = article.get('id')
+            url = process_url(article.get('url', ''))
+            headline = article.get('headline', '')
+            
+            # 去重
+            if article_id in seen or not url or not headline:
+                continue
+            seen.add(article_id)
+            
+            articles.append({
+                'title': headline,
+                'url': url,
+                'description': article.get('rubric', '')
+            })
+        
+        if articles:
+            feeds.append((section_name, articles))
     
-    return None
+    return feeds
 
 
 class Economist(BasicNewsRecipe):
     title = 'The Economist'
     language = 'en_GB'
     encoding = 'utf-8'
-    masthead_url = 'https://www.livemint.com/lm-img/dev/economist-logo-oneline.png'
-
-    __author__ = 'Kovid Goyal, unkn0wn'
-    description = 'Global news and current affairs from a European perspective.'
+    __author__ = 'Calibre Community'
+    description = 'Weekly edition of The Economist'
     extra_css = '''
-        em { color:#202020; }
-        img {display:block; margin:0 auto; max-width:100%;}
+        img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
         h1 { font-size: 1.8em; }
         h4 { font-size: 1.2em; margin-top: 1em; }
         blockquote { margin: 1em 2em; color: #404040; }
         .article-meta { color: gray; font-size: small; }
     '''
-
-    resolve_internal_links = True
     delay = 2
     browser_type = 'webengine'
-    remove_empty_feeds = True
     ignore_duplicate_articles = {'url'}
     
     recipe_specific_options = {
         'date': {
-            'short': 'The date of the edition to download (YYYY-MM-DD format)',
-            'long': 'For example, 2024-07-19',
+            'short': 'Edition date (YYYY-MM-DD)',
+            'default': '',
         },
         'res': {
-            'short': 'Image resolution',
-            'long': 'Image width in pixels',
+            'short': 'Image width in pixels',
             'default': '600',
         },
     }
 
-    def __init__(self, *args, **kwargs):
-        BasicNewsRecipe.__init__(self, *args, **kwargs)
-        self.articles_cache = {}
-
     def get_browser(self, *args, **kwargs):
         from calibre.utils.random_ua import random_common_chrome_user_agent
         kwargs['user_agent'] = kwargs.get('user_agent', random_common_chrome_user_agent())
-        br = BasicNewsRecipe.get_browser(self, *args, **kwargs)
-        return br
+        return BasicNewsRecipe.get_browser(self, *args, **kwargs)
 
     def publication_date(self):
-        edition_date = self.recipe_specific_options.get('date')
-        if edition_date and isinstance(edition_date, str):
-            edition_date = edition_date.strip()
-            if edition_date:
-                try:
-                    return datetime.strptime(edition_date, '%Y-%m-%d').replace(tzinfo=local_tz)
-                except:
-                    pass
-        
-        # 尝试从网页获取
-        try:
-            url = 'https://www.economist.com/weeklyedition'
-            soup = self.index_to_soup(url)
-            date_str = extract_publication_date(soup)
-            if date_str:
-                # 尝试解析日期
-                for fmt in ['%Y-%m-%d', '%B %d, %Y', '%d %B %Y', '%Y/%m/%d']:
-                    try:
-                        return datetime.strptime(date_str[:10], fmt).replace(tzinfo=local_tz)
-                    except:
-                        continue
-        except:
-            pass
-        
-        return super().publication_date()
+        date_str = self.recipe_specific_options.get('date', '').strip()
+        if date_str:
+            try:
+                return datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=local_tz)
+            except:
+                pass
+        return datetime.now().replace(tzinfo=local_tz)
 
     def parse_index(self):
-        """解析索引页面，获取所有文章"""
-        edition_date = self.recipe_specific_options.get('date')
-        if edition_date and isinstance(edition_date, str):
-            edition_date = edition_date.strip()
-        
-        if edition_date:
-            url = 'https://www.economist.com/weeklyedition/' + edition_date
-            self.timefmt = ' [' + edition_date + ']'
+        date_str = self.recipe_specific_options.get('date', '').strip()
+        if date_str:
+            url = f'https://www.economist.com/weeklyedition/{date_str}'
         else:
             url = 'https://www.economist.com/weeklyedition'
-            self.timefmt = ''
-        
-        self.log(f'Fetching from: {url}')
-        
-        # 获取页面内容
-        soup = self.index_to_soup(url)
-        if not soup:
-            raise NoArticles('Failed to fetch the page')
-        
-        # 尝试从 __NEXT_DATA__ 提取数据
-        script_tag = soup.find('script', id='__NEXT_DATA__')
-        if script_tag:
+            # 如果没有指定日期，访问首页会重定向到最新一期
             try:
-                data = json.loads(script_tag.string)
-                # 尝试从不同的路径提取文章
-                articles_data = self.extract_articles_from_next_data(data)
-                if articles_data:
-                    self.log(f'Extracted {len(articles_data)} articles from __NEXT_DATA__')
-                    return self.build_feeds(articles_data, soup)
-            except Exception as e:
-                self.log(f'Failed to parse __NEXT_DATA__: {e}')
-        
-        # 如果 __NEXT_DATA__ 没有文章，直接解析 HTML
-        self.log('Extracting articles from HTML...')
-        articles = extract_articles_from_page(soup)
-        
-        if not articles:
-            # 尝试查找所有可能的文章链接
-            self.log('Trying alternative extraction method...')
-            articles = []
-            for a in soup.find_all('a', href=True):
-                href = a.get('href', '')
-                # 匹配经济学人的文章URL模式
-                if re.match(r'^/\d{4}/\d{2}/\d{2}/[a-z0-9-]+$', href):
-                    title = a.get_text(strip=True)
-                    if title and len(title) > 10:
-                        url_full = process_url(href)
-                        articles.append({
-                            'title': title,
-                            'url': url_full,
-                            'description': ''
-                        })
-        
-        if not articles:
-            raise NoArticles('No articles found on the page')
-        
-        self.log(f'Found {len(articles)} articles')
-        
-        # 去重
-        seen = set()
-        unique_articles = []
-        for article in articles:
-            if article['url'] not in seen:
-                seen.add(article['url'])
-                unique_articles.append(article)
-        
-        return self.build_feeds(unique_articles, soup)
-
-    def extract_articles_from_next_data(self, data):
-        """从 __NEXT_DATA__ 中提取文章"""
-        articles = []
-        seen = set()
-        
-        # 尝试不同的数据路径
-        paths = [
-            ['props', 'pageProps', 'content', 'components'],
-            ['props', 'pageProps', 'sections'],
-            ['props', 'pageProps', 'articles'],
-            ['props', 'pageProps', 'content', 'articles'],
-        ]
-        
-        for path in paths:
-            try:
-                current = data
-                for key in path:
-                    current = current.get(key, {})
-                    if not current:
-                        break
-                
-                if isinstance(current, list):
-                    for item in current:
-                        # 如果是栏目
-                        if item.get('articles'):
-                            for article in item['articles']:
-                                url = process_url(article.get('url', ''))
-                                title = article.get('headline') or article.get('title') or ''
-                                if url and title and url not in seen:
-                                    seen.add(url)
-                                    articles.append({
-                                        'title': title,
-                                        'url': url,
-                                        'description': article.get('rubric') or article.get('description') or ''
-                                    })
-                        # 如果是文章列表
-                        elif item.get('url') and item.get('headline'):
-                            url = process_url(item.get('url'))
-                            title = item.get('headline')
-                            if url and title and url not in seen:
-                                seen.add(url)
-                                articles.append({
-                                    'title': title,
-                                    'url': url,
-                                    'description': item.get('rubric') or ''
-                                })
+                resp = self.browser.open(url)
+                url = resp.geturl()
+                # 从URL中提取日期
+                match = re.search(r'/(\d{4}-\d{2}-\d{2})$', url)
+                if match:
+                    date_str = match.group(1)
             except:
-                continue
-        
-        return articles
+                pass
 
-    def build_feeds(self, articles, soup=None):
-        """构建 feeds 结构"""
-        # 尝试获取封面
-        if soup:
-            cover_url = extract_cover_from_page(soup)
-            if cover_url:
-                self.cover_url = cover_url
-                self.log(f'Got cover: {self.cover_url}')
+        self.log(f'Fetching: {url}')
+        soup = self.index_to_soup(url)
         
-        # 按栏目分组（如果有栏目信息）
-        feeds = []
+        # 获取 __NEXT_DATA__ 脚本
+        script_tag = soup.find('script', id='__NEXT_DATA__')
+        if not script_tag:
+            raise Exception('No __NEXT_DATA__ found')
+
+        data = json.loads(script_tag.string)
+        content = data.get('props', {}).get('pageProps', {}).get('content', {})
         
-        # 如果有描述信息，提取栏目信息
-        sections = {}
-        for article in articles:
-            # 尝试从 URL 提取栏目
-            url = article['url']
-            match = re.search(r'https?://www\.economist\.com/([^/]+)/', url)
-            if match:
-                section = match.group(1).replace('-', ' ').title()
-                if section not in sections:
-                    sections[section] = []
-                sections[section].append(article)
-            else:
-                if 'Other' not in sections:
-                    sections['Other'] = []
-                sections['Other'].append(article)
-        
-        # 按栏目排序
-        for section_name, section_articles in sorted(sections.items()):
-            if section_articles:
-                self.log(f'Section "{section_name}": {len(section_articles)} articles')
-                feeds.append((section_name, section_articles))
+        if not content:
+            raise Exception('No content data found')
+
+        # 设置封面
+        cover_url = extract_cover_url(content)
+        if cover_url:
+            self.cover_url = cover_url
+            self.log(f'Cover: {cover_url}')
+
+        # 设置描述
+        self.description = content.get('headline', 'The Economist')
+
+        # 设置时间格式
+        issue_date = content.get('issueDate', '')
+        if issue_date:
+            self.timefmt = f' [{issue_date[:10]}]'
+
+        # 提取文章
+        components = content.get('components', [])
+        feeds = extract_articles_from_components(components)
         
         if not feeds:
-            # 如果没有分组，全部放在一个栏目
-            feeds.append(('Articles', articles))
+            raise Exception('No articles found')
+
+        total = sum(len(articles) for _, articles in feeds)
+        self.log(f'Found {total} articles in {len(feeds)} sections')
         
         return feeds
 
     def preprocess_html(self, soup):
-        """预处理文章 HTML"""
-        width = '600'
-        w = self.recipe_specific_options.get('res')
-        if w and isinstance(w, str):
-            width = w
-        
-        # 处理图片
-        for img in soup.findAll('img', src=True):
-            src = img['src']
-            if 'economist.com' in src and 'cdn-cgi' not in src:
-                img['src'] = src.replace(
+        width = self.recipe_specific_options.get('res', '600')
+        for img in soup.find_all('img', src=True):
+            if 'economist.com' in img['src'] and 'cdn-cgi' not in img['src']:
+                img['src'] = img['src'].replace(
                     'economist.com/',
                     f'economist.com/cdn-cgi/image/width={width},quality=80,format=auto/'
                 )
-        
-        # 移除不需要的元素
-        for tag in soup.findAll(['script', 'style', 'noscript', 'iframe']):
-            tag.decompose()
-        
-        # 处理文章元数据
-        for meta in soup.findAll(['time', '.date', '.byline']):
-            meta['class'] = meta.get('class', []) + ['article-meta']
-        
         return soup
 
-    def preprocess_raw_html(self, raw, url):
-        """预处理原始 HTML"""
-        # 如果是从网页获取的，直接返回
-        if '/interactive/' in url:
-            return '<html><body><article><h1>Interactive Article</h1><p>This article is interactive and best viewed in a browser.</p></article></body></html>'
-        
-        # 尝试从原始 HTML 中提取文章内容
-        from html5_parser import parse
-        from lxml import etree
-        
-        try:
-            root = parse(raw)
-            
-            # 查找文章内容
-            article_selectors = [
-                'article',
-                '.article-body',
-                '.content-body',
-                '.story-body',
-                '.prose',
-                '.article-content'
-            ]
-            
-            article_body = None
-            for selector in article_selectors:
-                try:
-                    elem = root.cssselect(selector)
-                    if elem:
-                        article_body = elem[0]
-                        break
-                except:
-                    continue
-            
-            if article_body is not None:
-                # 清理不需要的元素
-                for tag in article_body.findall('.//script'):
-                    tag.getparent().remove(tag)
-                for tag in article_body.findall('.//style'):
-                    tag.getparent().remove(tag)
-                
-                # 获取标题
-                title_elem = root.find('.//h1')
-                title = ''
-                if title_elem is not None:
-                    title = etree.tostring(title_elem, encoding='unicode')
-                
-                # 构建完整的文章 HTML
-                html = f'<html><body><article>{title}{etree.tostring(article_body, encoding="unicode")}</article></body></html>'
-                return html
-            
-            # 如果找不到文章内容，尝试从 __NEXT_DATA__ 提取
-            script = root.find('.//script[@id="__NEXT_DATA__"]')
-            if script is not None:
-                try:
-                    data = json.loads(script.text)
-                    # 尝试提取文章内容
-                    content_paths = [
-                        ['props', 'pageProps', 'cp2Content', 'body'],
-                        ['props', 'pageProps', 'content', 'body'],
-                        ['props', 'pageProps', 'article', 'body'],
-                    ]
-                    
-                    for path in content_paths:
-                        try:
-                            current = data
-                            for key in path:
-                                current = current.get(key, {})
-                            if current:
-                                # 简单处理，提取文本
-                                html = '<html><body><article>'
-                                for node in current:
-                                    if node.get('type') == 'PARAGRAPH':
-                                        text = node.get('text', '')
-                                        if text:
-                                            html += f'<p>{text}</p>'
-                                    elif node.get('type') == 'CROSSHEAD':
-                                        text = node.get('text', '')
-                                        if text:
-                                            html += f'<h4>{text}</h4>'
-                                html += '</article></body></html>'
-                                return html
-                        except:
-                            continue
-                except:
-                    pass
-            
-        except Exception as e:
-            self.log(f'Error preprocessing HTML: {e}')
-        
-        # 如果所有方法都失败，返回原始 HTML
-        return raw
-
     def print_version(self, url):
-        """获取文章的打印版本"""
-        # 直接返回 URL，让 calibre 处理
+        """直接返回文章URL，让Calibre处理"""
         return url
