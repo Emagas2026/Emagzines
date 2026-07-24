@@ -16,7 +16,7 @@ MAGZINES = {
     "te": {
         "id": "te",
         "name": "The Economist",
-        "recipe": "The Economist.recipe",  # ← 关键修改：使用仓库中的文件
+        "recipe": "The Economist.recipe",
         "folder": "the_economist",
         "date_regex": r"images/\K(\d{8})",
     },
@@ -26,13 +26,22 @@ MAGZINES = {
         "recipe": "TIME Magazine",
         "folder": "time_magzine",
         "date_regex": r"TIM\K(\d{6})",
-    }
+    },
+    # ===== 新增 Nature News =====
+    "nature": {
+        "id": "nature",
+        "name": "Nature News",
+        "recipe": "Nature News.recipe",  # recipe 文件名
+        "folder": "nature_news",          # 存储文件夹
+        "date_regex": None,               # Nature 使用 RSS，不需要日期正则
+    },
 }
 
 RECIPE_OPTIONS = {
     "te": "date",
     "ny": "date",
     "tm": "edition",
+    "nature": None,  # Nature 不需要额外的 recipe 选项
 }
 
 BOOKS_DIR = "converted_ebooks"
@@ -71,16 +80,18 @@ def run_command(args):
 def main():
     if len(sys.argv) < 2:
         print("Usage: python main.py <mag_id> [issue_date]")
+        print("Available mag_ids: ny, te, tm, nature")
         sys.exit(1)
 
     mag_id = sys.argv[1]
     if mag_id not in MAGZINES:
         print(f"Unknown magazine: {mag_id}")
+        print(f"Available: {', '.join(MAGZINES.keys())}")
         sys.exit(1)
 
     issue_date = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] and sys.argv[2] != "." else None
 
-    # ==================== 日期调整 ====================
+    # ==================== 日期调整（仅对 te/ny 有效） ====================
     if (mag_id in ["te", "ny"]) and issue_date:
         try:
             dt_obj = safe_strptime(issue_date)
@@ -115,15 +126,15 @@ def main():
     print(f"--- Fetching {config['name']} ---")
     raw_epub = "temp_output.epub"
 
-    # ===== 关键修改：直接使用配置中的 recipe 路径 =====
-    # recipe 现在已经是 "The Economist.recipe"，ebook-convert 会优先查找当前目录
+    # ===== 使用配置中的 recipe 路径 =====
     recipe_to_use = recipe
     print(f"📄 Using recipe: {recipe_to_use}")
 
     convert_args = ["ebook-convert", recipe_to_use, raw_epub]
 
-    if issue_date:
-        opt_name = RECIPE_OPTIONS.get(mag_id, "date")
+    # 添加 recipe 选项（如果有）
+    opt_name = RECIPE_OPTIONS.get(mag_id)
+    if issue_date and opt_name:
         convert_args.append(f"--recipe-specific-option={opt_name}:{issue_date}")
         print(f"Using recipe option: {opt_name}:{issue_date}")
 
@@ -136,18 +147,24 @@ def main():
 
     # ==================== 提取日期 ====================
     date_str = None
-    # 从输出日志提取（可根据需要补充 extract_date_from_output）
-    if mag_id in MAGZINES:
-        date_str = None
-
-    if not date_str:
-        dt_obj = safe_strptime(issue_date)
-        if dt_obj:
-            date_str = dt_obj.strftime("%Y%m%d")
-
-    if not date_str:
-        date_str = datetime.now().strftime("%Y%m%d")
-        print(f"Warning: Using current date as fallback: {date_str}")
+    
+    # 对于 Nature，使用 issue_date 或当前日期
+    if mag_id == "nature":
+        if issue_date:
+            dt_obj = safe_strptime(issue_date)
+            if dt_obj:
+                date_str = dt_obj.strftime("%Y%m%d")
+        if not date_str:
+            date_str = datetime.now().strftime("%Y%m%d")
+    else:
+        # 其他杂志的日期提取逻辑（保持不变）
+        if issue_date:
+            dt_obj = safe_strptime(issue_date)
+            if dt_obj:
+                date_str = dt_obj.strftime("%Y%m%d")
+        if not date_str:
+            date_str = datetime.now().strftime("%Y%m%d")
+            print(f"Warning: Using current date as fallback: {date_str}")
 
     print(f"Publication Date: {date_str}")
 
@@ -165,7 +182,7 @@ def main():
     # 提取封面
     run_command(["ebook-meta", final_epub, f"--get-cover={cover_jpg}"])
 
-    # 转 PDF
+    # 转 PDF（可选，Nature 可能不需要，但保留）
     print("Converting to PDF...")
     run_command(["ebook-convert", final_epub, final_pdf])
 
