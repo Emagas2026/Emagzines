@@ -5,20 +5,17 @@ on:
   workflow_dispatch:
     inputs:
       issue_date:
-        description: 'Issue Date (YYYY-MM-DD 或 YYYYMMDD)'
+        description: 'Issue Date (YYYY-MM-DD)'
         required: false
-        default: ''
-
   schedule:
-    - cron: '0 22 * * 4'      # 北京时间每周五早上 6:00（UTC 周四 22:00）
+    - cron: '0 22 * * *'
 
 jobs:
   worker:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Fetch and Process
         uses: ./.github/actions/fetch-mag
@@ -26,28 +23,4 @@ jobs:
           mag_id: te
           mag_name: "The Economist"
           issue_date: ${{ github.event.inputs.issue_date }}
-          github_token: ${{ github.token }}
-
-      - name: Upload Artifacts (供下载)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: The-Economist-${{ env.DATE || 'latest' }}
-          path: converted_ebooks/
-          retention-days: 14
-
-      - name: Commit and Push to Repository
-        if: always()
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          if [ -d "converted_ebooks" ]; then
-            git add converted_ebooks/
-            if git diff --staged --quiet; then
-              echo "No new files to commit"
-            else
-              git commit -m "Add The Economist ${{ env.DATE || $(date +'%Y-%m-%d') }} - $(date +'%Y-%m-%d %H:%M UTC')" || true
-              git push
-            fi
-          fi
+          github_token: ${{ secrets.GITHUB_TOKEN || github.token }}
