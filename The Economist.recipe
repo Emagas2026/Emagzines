@@ -196,11 +196,10 @@ def get_content(url_, retries=3):
             return res.read()
         except Exception as e:
             if attempt < retries - 1:
-                wait_time = 2 ** attempt  # 指数退避: 1s, 2s, 4s
+                wait_time = 2 ** attempt
                 print(f'Request failed (attempt {attempt + 1}/{retries}): {e}')
                 print(f'Retrying in {wait_time} seconds...')
                 time.sleep(wait_time)
-                # 每次重试使用不同的 trace id
                 headers['x-app-trace-id'] = str(uuid4())
                 continue
             raise
@@ -213,6 +212,7 @@ def process_url(url):
 
 
 def get_edition(issue_date=None):
+    """获取周刊数据，包含完整的文章列表"""
     if issue_date:
         operation_name = 'EditionByDateQuery'
         operation_args = '($issueDate: Date!)'
@@ -223,22 +223,61 @@ def get_edition(issue_date=None):
         operation_args = ''
         resolver = 'findLatestEdition(editionType: [WEEKLY])'
         variables = {}
+    
+    # 增强的 GraphQL 查询，获取更完整的文章数据
     graphql = (
         'query ' + operation_name + operation_args + ' {'
         ' edition: ' + resolver + ' {'
         ' id issueDate datePublished url headline flyTitle rubric'
         ' cover { url }'
-        ' sections { id name articles { id url headline flyTitle rubric } }'
+        ' sections {'
+        '   id name'
+        '   articles {'
+        '     id'
+        '     url'
+        '     headline'
+        '     flyTitle'
+        '     rubric'
+        '     byline'
+        '     datePublished'
+        '     dateModified'
+        '     teaserImage { url altText }'
+        '     leadComponent {'
+        '       __typename'
+        '       type'
+        '       url'
+        '       altText'
+        '       caption { text textJson }'
+        '     }'
+        '   }'
         ' }'
         '}'
     )
+    
     query = {
         'operationName': operation_name,
         'variables': json.dumps(variables, separators=(',', ':')),
         'query': graphql,
     }
     url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql?' + urlencode(query, safe='()!', quote_via=quote)
-    return safe_dict(json.loads(get_content(url)), 'data', 'edition')
+    
+    try:
+        result = json.loads(get_content(url))
+        edition = safe_dict(result, 'data', 'edition')
+        
+        # 调试：打印文章数量
+        if edition and edition.get('sections'):
+            total_articles = 0
+            for section in edition['sections']:
+                article_count = len(section.get('articles', []))
+                total_articles += article_count
+                print(f"Section '{section.get('name', 'Unknown')}': {article_count} articles")
+            print(f"Total articles found: {total_articles}")
+        
+        return edition
+    except Exception as e:
+        print(f"Error fetching edition: {e}")
+        return {}
 
 
 class Economist(BasicNewsRecipe):
@@ -258,7 +297,7 @@ class Economist(BasicNewsRecipe):
 
     delay = 1
     browser_type = 'webengine'
-    from_web = True
+    from_web = False  # 默认使用 GraphQL API
     recipe_specific_options = {
         'date': {
             'short': 'The date of the edition to download (YYYY-MM-DD format)',
@@ -324,36 +363,48 @@ class Economist(BasicNewsRecipe):
             )
         return ans
 
-    def economist_test_article(self):
-        self.from_web = False
-        return [('Articles', [{'title': 'test', 'url': 'https://www.economist.com/china/2025/09/10/china-is-ditching-the-dollar-fast'}])]
-
     def parse_index(self):
-        # return self.economist_test_article()
+        """解析索引，优先使用 GraphQL API"""
         edition_date = self.recipe_specific_options.get('date')
         if isinstance(edition_date, str):
             edition_date = edition_date.strip()
+        
+        # 设置时间格式
         if edition_date:
-            url = 'https://www.economist.com/weeklyedition/' + edition_date
             self.timefmt = ' [' + edition_date + ']'
         else:
-            edition_date = None
+            self.timefmt = ''
+        
+        # 首先尝试 GraphQL API
+        self.log('Fetching edition data from GraphQL API...')
+        try:
+            edition = self.economist_get_edition(edition_date)
+            if edition and edition.get('sections'):
+                ans = self.economist_parse_graphql_index(edition)
+                if ans:
+                    self.log(f'Successfully fetched {sum(len(articles) for _, articles in ans)} articles from GraphQL')
+                    return self.economist_return_index(ans)
+        except Exception as e:
+            self.log('Failed to get index from GraphQL with error:', e)
+        
+        # 如果 GraphQL 失败，回退到网页版
+        self.log('Falling back to website parsing...')
+        if edition_date:
+            url = 'https://www.economist.com/weeklyedition/' + edition_date
+        else:
             url = 'https://www.economist.com/weeklyedition'
+        
         try:
             ans = self.economist_parse_index(url)
+            if ans:
+                return self.economist_return_index(ans)
         except Exception as e:
             self.log('Failed to get index from website with error:', e)
-            ans = []
-        if not ans:
-            self.log('Falling back to GraphQL for the edition index')
-            try:
-                ans = self.economist_parse_graphql_index(self.economist_get_edition(edition_date))
-            except Exception as e:
-                self.log('Failed to get index from GraphQL with error:', e)
-                ans = []
-        return self.economist_return_index(ans)
+        
+        return self.economist_return_index([])
 
     def economist_parse_index(self, url):
+        """从网页解析周刊数据"""
         soup = self.index_to_soup(url)
         script_tag = soup.find('script', id='__NEXT_DATA__')
         if script_tag is None:
@@ -369,7 +420,6 @@ class Economist(BasicNewsRecipe):
         if script_tag is None:
             return []
         data = json.loads(script_tag.string)
-        # open('/t/raw.json', 'w').write(json.dumps(data, indent=2, sort_keys=True))
 
         self.description = safe_dict(data, 'props', 'pageProps', 'content', 'headline')
         self.timefmt = ' [' + safe_dict(data, 'props', 'pageProps', 'content', 'formattedIssueDate') + ']'
@@ -395,18 +445,17 @@ class Economist(BasicNewsRecipe):
                     section = component['name']
                     self.log(section)
                     for article in component['articles']:
-                        for article in component['articles']:
-                            if article['id'] in seen:
-                                continue
-                            seen.add(article['id'])
-                            title = article['headline']
-                            url = process_url(article['url'])
-                            sub = article.get('flyTitle') or ''
-                            desc = article.get('rubric') or ''
-                            if sub and section != sub:
-                                desc = sub + ' :: ' + desc
-                            self.log('\t', title, '\n\t', desc, '\n\t\t', url)
-                            articles.append({'title': title, 'url': url, 'description': desc})
+                        if article['id'] in seen:
+                            continue
+                        seen.add(article['id'])
+                        title = article['headline']
+                        url = process_url(article['url'])
+                        sub = article.get('flyTitle') or ''
+                        desc = article.get('rubric') or ''
+                        if sub and section != sub:
+                            desc = sub + ' :: ' + desc
+                        self.log('\t', title, '\n\t', desc, '\n\t\t', url)
+                        articles.append({'title': title, 'url': url, 'description': desc})
                     if articles:
                         feeds.append((section, articles))
 
@@ -419,10 +468,13 @@ class Economist(BasicNewsRecipe):
         return feeds
 
     def economist_parse_graphql_index(self, edition):
+        """从 GraphQL 数据解析周刊索引"""
         if not edition:
             return []
+        
         self.description = edition.get('headline') or self.description
-        self.timefmt = ' [' + edition['issueDate'][:10] + ']'
+        self.timefmt = ' [' + edition.get('issueDate', '')[:10] + ']'
+        
         cover_url = safe_dict(edition, 'cover', 'url')
         if cover_url:
             self.cover_url = (
@@ -438,32 +490,40 @@ class Economist(BasicNewsRecipe):
 
         feeds = []
         seen = set()
-        for component in edition.get('sections') or ():
+        
+        for section in edition.get('sections') or ():
+            section_name = section.get('name') or 'Unnamed Section'
             articles = []
-            section = component.get('name') or ''
-            self.log(section)
-            for article in component.get('articles') or ():
+            
+            for article in section.get('articles') or ():
                 url = process_url(article.get('url') or '')
                 article_id = article.get('id') or url
                 title = article.get('headline') or ''
+                
                 if not article_id or article_id in seen or not title or not url:
                     continue
+                
                 seen.add(article_id)
                 sub = article.get('flyTitle') or ''
                 desc = article.get('rubric') or ''
-                if sub and section != sub:
+                if sub and section_name != sub:
                     desc = sub + (' :: ' + desc if desc else '')
-                self.log('\t', title, '\n\t', desc, '\n\t\t', url)
-                articles.append({'title': title, 'url': url, 'description': desc})
+                
+                self.log(f'  Article: {title}')
+                articles.append({
+                    'title': title,
+                    'url': url,
+                    'description': desc,
+                    'date': article.get('datePublished', ''),
+                    'byline': article.get('byline', '')
+                })
+            
             if articles:
-                feeds.append((section, articles))
-
-        d = self.recipe_specific_options.get('de')
-        if d and isinstance(d, str):
-            if d.lower().strip() == 'yes':
-                self.from_web = True
+                self.log(f'Section "{section_name}": {len(articles)} articles')
+                feeds.append((section_name, articles))
             else:
-                self.from_web = False
+                self.log(f'Section "{section_name}": no articles found')
+        
         return feeds
 
     def preprocess_html(self, soup):
@@ -477,19 +537,26 @@ class Economist(BasicNewsRecipe):
         return soup
 
     def preprocess_raw_html(self, raw, url):
-        # open('/t/raw.html', 'wb').write(raw.encode('utf-8'))
+        """预处理文章 HTML"""
         if self.from_web:
             if '/interactive/' in url:
                 return '<html><body><article><h1>Article not available.</h1><em>This article is supposed to be read in a browser.</em></article></body></html>'
             root_ = parse(raw)
             script = root_.xpath('//script[@id="__NEXT_DATA__"]')
-            html = load_article_from_json(script[0].text)
+            if script:
+                html = load_article_from_json(script[0].text)
+            else:
+                return raw
         else:
             html = load_article_from_json(raw)
+        
         root = parse(html)
 
         for x in root.xpath('//*[name()="script" or name()="style" or name()="source" or name()="meta"]'):
-            x.getparent().remove(x)
+            parent = x.getparent()
+            if parent is not None:
+                parent.remove(x)
+        
         # the economist uses <small> for small caps with a custom font
         for init in root.xpath('//span[@data-caps="initial"]'):
             init.set('style', 'font-weight:bold;')
@@ -512,6 +579,7 @@ class Economist(BasicNewsRecipe):
         return raw
 
     def get_article(self, url):
+        """获取单篇文章的完整内容"""
         query = {
             'operationName': 'ArticleDeeplinkQuery',
             'variables': '{{"ref":"{}"}}'.format(url),
@@ -522,10 +590,16 @@ class Economist(BasicNewsRecipe):
         return raw
 
     def print_version(self, url):
+        """获取文章的打印版本"""
         if self.from_web:
             return url
-        art_cont = self.get_article(url)
-        pt = PersistentTemporaryFile('.html')
-        pt.write(art_cont)
-        pt.close()
-        return 'file:///' + pt.name
+        try:
+            art_cont = self.get_article(url)
+            pt = PersistentTemporaryFile('.html')
+            pt.write(art_cont)
+            pt.close()
+            return 'file:///' + pt.name
+        except Exception as e:
+            self.log(f'Error getting article {url}: {e}')
+            # 如果获取失败，返回原始 URL
+            return url
