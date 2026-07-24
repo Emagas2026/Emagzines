@@ -278,15 +278,130 @@ class Economist(BasicNewsRecipe):
         }])]
 
     def parse_index(self):
-        # return self.economist_test_article()
+        """
+        使用 GraphQL API 获取周刊文章列表，若失败则回退到 HTML 解析
+        """
         edition_date = self.recipe_specific_options.get('date')
         if edition_date and isinstance(edition_date, str):
             url = 'https://www.economist.com/weeklyedition/' + edition_date
             self.timefmt = ' [' + edition_date + ']'
         else:
             url = 'https://www.economist.com/weeklyedition'
+        
+        # 先尝试 GraphQL API
+        try:
+            self.log('Attempting to fetch via GraphQL...')
+            graphql_feeds = self.parse_index_via_graphql(edition_date)
+            if graphql_feeds:
+                self.log(f'✅ Successfully fetched {len(graphql_feeds)} sections via GraphQL')
+                return graphql_feeds
+        except Exception as e:
+            self.log(f'GraphQL attempt failed: {e}')
+        
+        # 如果 GraphQL 失败，回退到 HTML 解析
+        self.log('Falling back to HTML parsing...')
         ans = self.economist_parse_index(url)
         return self.economist_return_index(ans)
+
+    def parse_index_via_graphql(self, edition_date):
+        """通过 GraphQL API 获取文章列表"""
+        if not edition_date:
+            edition_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # 尝试不同的 GraphQL 端点
+        graphql_url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql'
+        
+        # 构建 GraphQL 查询
+        query = """
+        query WeeklyEditionQuery($date: String!) {
+          weeklyEdition(date: $date) {
+            headline
+            formattedIssueDate
+            cover {
+              url
+            }
+            components {
+              __typename
+              type
+              name
+              articles {
+                id
+                headline
+                url
+                rubric
+                flyTitle
+              }
+            }
+          }
+        }
+        """
+        
+        variables = {'date': edition_date}
+        payload = {
+            'query': query,
+            'variables': variables
+        }
+        
+        br = self.get_browser()
+        req = Request(
+            graphql_url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            method='POST'
+        )
+        
+        response = br.open(req)
+        raw_data = response.read().decode('utf-8')
+        data = json.loads(raw_data)
+        
+        edition = data.get('data', {}).get('weeklyEdition')
+        if not edition:
+            return None
+        
+        # 提取封面
+        cover_url = edition.get('cover', {}).get('url')
+        if cover_url:
+            self.cover_url = cover_url.replace(
+                'economist.com/',
+                'economist.com/cdn-cgi/image/width=960,quality=80,format=auto/'
+            )
+        
+        # 解析文章列表
+        feeds = []
+        seen = set()
+        
+        for component in edition.get('components', []):
+            if component.get('__typename') == 'AdComponent' or component.get('type') == 'AD':
+                continue
+            
+            section = component.get('name', 'Articles')
+            articles = []
+            
+            for article in component.get('articles', []):
+                article_id = article.get('id')
+                if article_id in seen:
+                    continue
+                seen.add(article_id)
+                
+                title = article.get('headline', '')
+                url = process_url(article.get('url', ''))
+                desc = article.get('rubric', '')
+                
+                if title and url:
+                    articles.append({
+                        'title': title,
+                        'url': url,
+                        'description': desc
+                    })
+            
+            if articles:
+                feeds.append((section, articles))
+        
+        return feeds if feeds else None
 
     def economist_parse_index(self, url):
         soup = self.index_to_soup(url)
@@ -303,7 +418,6 @@ class Economist(BasicNewsRecipe):
         if script_tag is None:
             return []
         data = json.loads(script_tag.string)
-        # open('/t/raw.json', 'w').write(json.dumps(data, indent=2, sort_keys=True))
 
         self.description = safe_dict(
             data, 'props', 'pageProps', 'content', 'headline'
