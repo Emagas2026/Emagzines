@@ -1,0 +1,26 @@
+#!/usr/bin/env python
+from calibre.web.feeds.news import BasicNewsRecipe
+
+class NatureRSS(BasicNewsRecipe):
+    title = 'Nature News'
+    language = 'en_GB'
+    encoding = 'utf-8'
+    __author__ = 'Calibre User'
+    description = 'Latest articles from Nature'
+    
+    # 使用 RDF/RSS 1.0 源
+    feeds = [
+        ('Latest Articles', 'http://feeds.nature.com/nature/rss/current')
+    ]
+    
+    # 保持文章顺序
+    oldest_article = 7
+    max_articles_per_feed = 50
+    
+    extra_css = '''
+        h1 { font-size: 1.5em; }
+        .author { color: #666; font-size: 0.9em; }
+        .date { color: #999; font-size: 0.85em; }
+        blockquote { margin: 1em 2em; color: #404040; }
+        .summary { font-style: italic; color: #333; }
+    '''
